@@ -252,6 +252,26 @@ struct ContextImp : Context, NEO::NonCopyableAndNonMovableClass {
                 handleTracking->opaqueIpcHandle = true;
             }
             this->driverHandle->getIPCHandleMap().insert(std::pair<uint64_t, IpcHandleTracking *>(handle, handleTracking));
+            
+#if defined(__linux__)
+            // Register with socket server for fallback mechanism
+            if constexpr (std::is_same_v<IpcDataT, IpcOpaqueMemoryData>) {
+                if (handleType == IpcHandleType::fdHandle && NEO::debugManager.flags.EnableIpcSocketFallback.get()) {
+                    auto driverHandleImp = static_cast<DriverHandleImp *>(this->driverHandle);
+                    if (!driverHandleImp->getIpcSocketServerPath().empty()) {
+                        driverHandleImp->registerIpcHandleWithServer(handle, static_cast<int>(handle), 
+                                                                    ipcData.processId, type, ipcData.poolOffset);
+                    } else {
+                        // Initialize socket server if not already done
+                        driverHandleImp->initializeIpcSocketServer();
+                        if (!driverHandleImp->getIpcSocketServerPath().empty()) {
+                            driverHandleImp->registerIpcHandleWithServer(handle, static_cast<int>(handle), 
+                                                                        ipcData.processId, type, ipcData.poolOffset);
+                        }
+                    }
+                }
+            }
+#endif
         }
     }
     bool isAllocationSuitableForCompression(const StructuresLookupTable &structuresLookupTable, Device &device, size_t allocSize);

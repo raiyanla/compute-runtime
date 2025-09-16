@@ -13,6 +13,10 @@
 #include "shared/source/os_interface/os_library.h"
 #include "shared/source/os_interface/sys_calls_common.h"
 
+#if defined(__linux__)
+#include "shared/source/os_interface/linux/ipc_socket_server.h"
+#endif
+
 #include "level_zero/api/extensions/public/ze_exp_ext.h"
 #include "level_zero/core/source/context/context.h"
 #include "level_zero/core/source/driver/driver_handle.h"
@@ -98,6 +102,13 @@ struct DriverHandleImp : public DriverHandle {
     uint32_t getEventMaxPacketCount(uint32_t numDevices, ze_device_handle_t *deviceHandles) const override;
     uint32_t getEventMaxKernelCount(uint32_t numDevices, ze_device_handle_t *deviceHandles) const override;
 
+#if defined(__linux__)
+    std::string getIpcSocketServerPath();
+    bool initializeIpcSocketServer();
+    void shutdownIpcSocketServer();
+    bool registerIpcHandleWithServer(uint64_t handleId, int fd, uint32_t processId, uint8_t memoryType, uint64_t poolOffset);
+#endif
+
     ze_result_t loadRTASLibrary() override;
     ze_result_t createRTASBuilder(const ze_rtas_builder_exp_desc_t *desc, ze_rtas_builder_exp_handle_t *phBuilder) override;
     ze_result_t createRTASBuilderExt(const ze_rtas_builder_ext_desc_t *desc, ze_rtas_builder_ext_handle_t *phBuilder) override;
@@ -146,6 +157,11 @@ struct DriverHandleImp : public DriverHandle {
 
     std::map<uint64_t, IpcHandleTracking *> ipcHandles;
     std::mutex ipcHandleMapMutex;
+
+#if defined(__linux__)
+    std::unique_ptr<NEO::IpcSocketServer> ipcSocketServer;
+    std::mutex ipcSocketServerMutex;
+#endif
 
     RootDeviceIndicesContainer rootDeviceIndices;
     std::map<uint32_t, NEO::DeviceBitfield> deviceBitfields;

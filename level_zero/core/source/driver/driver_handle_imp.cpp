@@ -275,6 +275,10 @@ DriverHandleImp::~DriverHandleImp() {
         this->svmAllocsManager = nullptr;
     }
 
+#if defined(__linux__)
+    shutdownIpcSocketServer();
+#endif
+
     L0::Sysman::globalSysmanDriverCleanup();
 }
 
@@ -1079,5 +1083,55 @@ ze_result_t DriverHandleImp::getErrorDescription(const char **ppString) {
 ze_result_t DriverHandleImp::clearErrorDescription() {
     return static_cast<ze_result_t>(this->devices[0]->getNEODevice()->getExecutionEnvironment()->clearErrorDescription());
 }
+
+#if defined(__linux__)
+std::string DriverHandleImp::getIpcSocketServerPath() {
+    std::lock_guard<std::mutex> lock(ipcSocketServerMutex);
+    if (ipcSocketServer && ipcSocketServer->isRunning()) {
+        return ipcSocketServer->getSocketPath();
+    }
+    return "";
+}
+
+bool DriverHandleImp::initializeIpcSocketServer() {
+    std::lock_guard<std::mutex> lock(ipcSocketServerMutex);
+    
+    if (ipcSocketServer && ipcSocketServer->isRunning()) {
+        return true;
+    }
+
+    ipcSocketServer = std::make_unique<NEO::IpcSocketServer>();
+    if (!ipcSocketServer->initialize()) {
+        PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr,
+                          "DriverHandleImp: Failed to initialize IPC socket server\n");
+        ipcSocketServer.reset();
+        return false;
+    }
+
+    PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr,
+                      "DriverHandleImp: IPC socket server initialized at %s\n", 
+                      ipcSocketServer->getSocketPath().c_str());
+    return true;
+}
+
+void DriverHandleImp::shutdownIpcSocketServer() {
+    std::lock_guard<std::mutex> lock(ipcSocketServerMutex);
+    if (ipcSocketServer) {
+        ipcSocketServer->shutdown();
+        ipcSocketServer.reset();
+    }
+}
+
+bool DriverHandleImp::registerIpcHandleWithServer(uint64_t handleId, int fd, uint32_t processId, 
+                                                  uint8_t memoryType, uint64_t poolOffset) {
+    std::lock_guard<std::mutex> lock(ipcSocketServerMutex);
+    
+    if (!ipcSocketServer || !ipcSocketServer->isRunning()) {
+        return false;
+    }
+
+    return ipcSocketServer->registerHandle(handleId, fd, processId, memoryType, poolOffset);
+}
+#endif
 
 } // namespace L0
