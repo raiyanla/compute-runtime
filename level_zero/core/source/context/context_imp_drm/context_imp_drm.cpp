@@ -20,10 +20,30 @@ namespace L0 {
 bool ContextImp::isOpaqueHandleSupported(IpcHandleType *handleType) {
     bool useOpaqueHandle = contextSettings.enablePidfdOrSockets;
     *handleType = IpcHandleType::fdHandle;
+    
     if (useOpaqueHandle) {
+        // Force socket fallback if requested
+        if (NEO::debugManager.flags.ForceIpcSocketFallback.get()) {
+            PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, 
+                              "Forcing IPC socket fallback as requested\n");
+            return true;
+        }
+        
+        // Try prctl for pidfd support
         if (NEO::SysCalls::prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1) {
-            PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "prctl Syscall for PR_SET_PTRACER, PR_SET_PTRACER_ANY failed, using fallback mechanism for IPC handle exchange\n");
-            return false;
+            PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, 
+                              "prctl Syscall for PR_SET_PTRACER, PR_SET_PTRACER_ANY failed: %s\n", strerror(errno));
+            
+            // Check if socket fallback is available
+            if (NEO::debugManager.flags.EnableIpcSocketFallback.get()) {
+                PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, 
+                                  "pidfd unavailable, but socket fallback is enabled - opaque handles still supported\n");
+                return true;
+            } else {
+                PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, 
+                                  "pidfd unavailable and socket fallback disabled - disabling opaque handles\n");
+                return false;
+            }
         }
     }
     return useOpaqueHandle;
