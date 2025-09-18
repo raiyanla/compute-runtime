@@ -14,6 +14,10 @@
 #include "shared/source/os_interface/linux/sys_calls.h"
 #include "shared/source/os_interface/os_interface.h"
 
+#if defined(__linux__)
+#include "shared/source/os_interface/linux/ipc_socket_client.h"
+#endif
+
 #include "level_zero/core/source/context/context_imp.h"
 #include "level_zero/core/source/device/device.h"
 #include "level_zero/core/source/driver/driver_handle_imp.h"
@@ -35,10 +39,37 @@ bool ContextImp::isOpaqueHandleSupported(IpcHandleType *handleType) {
     } else {
         *handleType = IpcHandleType::fdHandle;
         if (useOpaqueHandle) {
+#if defined(__linux__)
+            // Force socket fallback if requested
+            if (NEO::debugManager.flags.ForceIpcSocketFallback.get()) {
+                PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, 
+                                  "Forcing IPC socket fallback as requested\n");
+                return true;
+            }
+            
+            // Try prctl for pidfd support
+            if (NEO::SysCalls::prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1) {
+                PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, 
+                                  "prctl Syscall for PR_SET_PTRACER, PR_SET_PTRACER_ANY failed: %s\n", strerror(errno));
+                
+                // Check if socket fallback is available
+                if (NEO::debugManager.flags.EnableIpcSocketFallback.get()) {
+                    PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, 
+                                      "pidfd unavailable, but socket fallback is enabled - opaque handles still supported\n");
+                    return true;
+                } else {
+                    PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, 
+                                      "pidfd unavailable and socket fallback disabled - disabling opaque handles\n");
+                    return false;
+                }
+            }
+#else
+            // Non-Linux platforms: original logic for pidfd (if available)
             if (NEO::SysCalls::prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1) {
                 PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "prctl Syscall for PR_SET_PTRACER, PR_SET_PTRACER_ANY failed, using fallback mechanism for IPC handle exchange\n");
                 return false;
             }
+#endif
         }
     }
     return useOpaqueHandle;
@@ -81,8 +112,58 @@ void *ContextImp::getMemHandlePtr(ze_device_handle_t hDevice,
 
         NEO::SvmAllocationData allocDataInternal(neoDevice->getRootDeviceIndex());
         uint64_t importHandle = handle;
+        bool pidfdSuccess = false;
+        
         if (useOpaqueHandle) {
-            // With pidfd approach extract parent pid and target fd before importing handle
+#if defined(__linux__)
+            if (!NEO::debugManager.flags.ForceIpcSocketFallback.get()) {
+                // Try pidfd approach first
+                pid_t exporterPid = static_cast<pid_t>(processId);
+                unsigned int pidfdFlags = 0u;
+                int pidfd = NEO::SysCalls::pidfdopen(exporterPid, pidfdFlags);
+                if (pidfd == -1) {
+                    PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "pidfd_open Syscall failed: %s\n", strerror(errno));
+                } else {
+                    unsigned int getfdFlags = 0u;
+                    int newfd = NEO::SysCalls::pidfdgetfd(pidfd, static_cast<int>(handle), getfdFlags);
+                    NEO::SysCalls::close(pidfd);
+                    if (newfd < 0) {
+                        PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, "pidfd_getfd Syscall failed: %s\n", strerror(errno));
+                    } else {
+                        importHandle = static_cast<uint64_t>(newfd);
+                        pidfdSuccess = true;
+                    }
+                }
+            }
+
+            // Try socket fallback if pidfd failed or was disabled
+            if (!pidfdSuccess && NEO::debugManager.flags.EnableIpcSocketFallback.get()) {
+                auto driverHandleImp = static_cast<DriverHandleImp *>(this->driverHandle);
+                std::string socketPath = driverHandleImp->getIpcSocketServerPath();
+                
+                if (!socketPath.empty()) {
+                    NEO::IpcSocketClient socketClient;
+                    if (socketClient.connectToServer(socketPath)) {
+                        int receivedFd = socketClient.requestHandle(handle, processId);
+                        if (receivedFd != -1) {
+                            importHandle = static_cast<uint64_t>(receivedFd);
+                            PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, 
+                                              "IPC socket fallback successful for handle %lu\n", handle);
+                        } else {
+                            PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, 
+                                              "IPC socket fallback failed for handle %lu\n", handle);
+                        }
+                    } else {
+                        PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, 
+                                          "Failed to connect to IPC socket server at %s\n", socketPath.c_str());
+                    }
+                } else {
+                    PRINT_DEBUG_STRING(NEO::debugManager.flags.PrintDebugMessages.get(), stderr, 
+                                      "IPC socket server not available for fallback\n");
+                }
+            }
+#else
+            // Non-Linux platforms: original pidfd logic
             pid_t exporterPid = static_cast<pid_t>(processId);
             unsigned int flags = 0u;
             int pidfd = NEO::SysCalls::pidfdopen(exporterPid, flags);
@@ -97,6 +178,7 @@ void *ContextImp::getMemHandlePtr(ze_device_handle_t hDevice,
                     importHandle = static_cast<uint64_t>(newfd);
                 }
             }
+#endif
         }
 
         return this->driverHandle->importFdHandle(neoDevice,

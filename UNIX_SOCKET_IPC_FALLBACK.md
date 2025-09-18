@@ -31,7 +31,8 @@ This implementation provides a Unix socket-based fallback mechanism for IPC hand
   - `shutdownIpcSocketServer()`: Clean shutdown
 
 #### Context Implementation
-- **context_imp_drm.cpp**: Modified `getMemHandlePtr()` to implement fallback logic
+- **context_imp_drm.cpp**: Modified `getMemHandlePtr()` to implement fallback logic for Linux-only builds
+- **context_imp_drm_or_wddm.cpp**: Modified both `isOpaqueHandleSupported()` and `getMemHandlePtr()` for cross-platform builds with Linux-specific socket fallback
 - **context_imp.h**: Modified `setIPCHandleData()` to register handles with socket server
 
 ## Protocol Design
